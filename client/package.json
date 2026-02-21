@@ -1,0 +1,16 @@
+{
+  "name": "dosbox-injector",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "build": "npx esbuild main.ts --bundle --sourcemap --outfile=bundle.js --format=iife --global-name=injector --external:./vendor/keystone-x86.min --external:./vendor/capstone-x86.min",
+    "dev": "npx esbuild main.ts --bundle --sourcemap --outfile=bundle.js --format=iife --global-name=injector --external:./vendor/keystone-x86.min --external:./vendor/capstone-x86.min --watch"
+  },
+  "dependencies": {
+    "@pretendonetwork/binary-parser": "^1.0.0",
+    "binary-parser": "^2.3.0",
+    "buffer": "^6.0.3",
+    "esbuild": "^0.27.3"
+  }
+}

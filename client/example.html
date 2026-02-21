@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>DOSBox Injector</title>
+	<style>
+		:root {
+			--bg: #1a1a1a;
+			--panel: #2d2d2d;
+			--text: #e0e0e0;
+			--accent: #00ff41; /* Terminal Green */
+			--border: #444;
+		}
+
+		body {
+			font-family: 'Courier New', monospace;
+			background-color: var(--bg);
+			color: var(--text);
+			margin: 0;
+			display: grid;
+			grid-template-columns: 350px 1fr;
+			grid-template-rows: auto 1fr;
+			height: 100vh;
+		}
+
+		/* Top Bar / Status */
+		header {
+			grid-column: 1 / span 2;
+			background: #000;
+			padding: 15px 20px;
+			border-bottom: 2px solid var(--accent);
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+		}
+
+		.status-badge {
+			color: var(--accent);
+			font-weight: bold;
+		}
+
+		/* Sidebar - Settings */
+		#settings-panel {
+			background: var(--panel);
+			padding: 20px;
+			border-right: 1px solid var(--border);
+			overflow-y: auto;
+		}
+
+		.setting-row {
+			display: flex;
+			gap: 10px;
+			margin-bottom: 15px;
+			align-items: center;
+		}
+
+		.setting-row label { flex: 1; font-size: 0.9rem; }
+
+		input[type="text"] {
+			background: #000;
+			border: 1px solid var(--border);
+			color: var(--accent);
+			padding: 5px;
+			width: 80px;
+			text-align: center;
+		}
+
+		button {
+			background: var(--accent);
+			color: #000;
+			border: none;
+			padding: 5px 10px;
+			cursor: pointer;
+			font-weight: bold;
+		}
+
+		button:hover { opacity: 0.8; }
+
+		/* Main Content - Logs */
+		#log-container {
+			display: grid;
+			grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+			align-content: start; /* Pulls all rows to the top */
+			align-items: start;   /* Prevents items from stretching vertically */
+			gap: 15px;
+			padding: 20px;
+			overflow-y: auto;
+		}
+
+		.log-viewer {
+			background: #000;
+			border: 1px solid var(--border);
+			display: flex;
+			flex-direction: column;
+			height: 300px;
+		}
+
+		.log-header {
+			background: var(--border);
+			padding: 5px 10px;
+			font-size: 0.8rem;
+			text-transform: uppercase;
+		}
+
+		.log-output {
+			padding: 10px;
+			font-size: 0.85rem;
+			overflow-y: scroll;
+			flex-grow: 1;
+			white-space: pre-wrap;
+		}
+	</style>
+	<script src="./vendor/keystone-x86.min.js"></script>
+	<script src="./vendor/capstone-x86.min.js"></script>
+	<script src="bundle.js"></script>
+
+</head>
+<body>
+
+<header>
+	<div>Game: <span id="game-title"></span></div>
+	<button class="settings-write-button" onclick="installHooks();">Install hooks</button>
+	<div class="status-badge">Status: <span id="app-status"></span></div>
+</header>
+
+<section id="settings-panel">
+	<h3>Settings</h3>
+	<div id="settings-list">
+	</div>
+</section>
+
+<section id="log-container">
+</section>
+
+<script>
+	function updateStatus(game, status) {
+		document.getElementById('game-title').innerText = game;
+		document.getElementById('app-status').innerText = status;
+	}
+
+	function createLogViewer(id, title) {
+		const container = document.getElementById('log-container');
+		const wrapper = document.createElement('div');
+		wrapper.className = 'log-viewer';
+		wrapper.innerHTML = `
+			<div class="log-header">${title}</div>
+			<div class="log-output" id="log-${id}"></div>
+		`;
+		container.appendChild(wrapper);
+	}
+
+	function appendToLog(id, message) {
+		const log = document.getElementById(`log-${id}`);
+		if (log) {
+			const now = new Date();
+			const timestamp = now.toTimeString().split(' ')[0] + '.' + Math.floor(now.getMilliseconds() / 100);
+			const entry = `[${timestamp}] ${message}\n`;
+			const isAtBottom = log.scrollHeight - log.scrollTop <= log.clientHeight + 1;
+			log.innerText += entry;
+			if (isAtBottom) {
+				log.scrollTop = log.scrollHeight;
+			}
+		}
+	}
+
+	async function settingUpdater(pollValue, input) {
+		while (true) {
+			try {
+				const newVal = await pollValue();
+				if (document.activeElement !== input) {
+					input.value = newVal;
+				}
+			} catch (error) {
+				console.error("Poll error:", error);
+			}
+			await new Promise(resolve => setTimeout(resolve, 100));
+		}
+	}
+
+	async function addSetting(name, initialHex, onWrite, pollValue) {
+		const list = document.getElementById('settings-list');
+		const row = document.createElement('div');
+		row.className = 'setting-row';
+		row.innerHTML = `
+			<label>${name}</label>
+			<input type="text" value="${initialHex}" id="input-${name}" class="settings-input">
+			<button class="settings-write-button">Write</button>
+		`;
+		const input = row.querySelector('.settings-input');
+		const button = row.querySelector('.settings-write-button');
+		const executeWrite = () => {
+			onWrite(input.value);
+		};
+		// mousedown because click loses focus and the updater overrides it
+		button.addEventListener('mousedown', executeWrite);
+		input.addEventListener('keypress', (e) => {
+			if (e.key === 'Enter') {
+				executeWrite();
+			}
+		});
+		list.appendChild(row);
+		settingUpdater(pollValue, input);
+	}
+
+	function parseString(data) {
+		let str = data.toString('utf8');
+		const nullIndex = str.indexOf('\0');
+		return nullIndex !== -1 ? str.substring(0, nullIndex) : str;
+	}
+
+	function formatSystemLogMessage(type, data) {
+		switch (type) {
+			case 0xFF00:
+				return '[DEBUG] ' + data.toString("hex");
+			case 0xFF01:
+				return '[DEBUG] ' + parseString(data);
+			case 0xFF02:
+				return '[INFO ] ' + parseString(data);
+			case 0xFF03:
+				return '[WARN ] ' + parseString(data);
+			case 0xFF04:
+				return '[ERRPR] ' + parseString(data);
+			default:
+				return `[ERROR] Unknown Type (${type})`;
+		}
+	}
+
+	function formatAppLogMessage(type, data) {
+		// FIXME: port to typescript and use the binary-parser library
+		const beforeUpdate = data.readUInt8(0);
+		const num1 = data.readUInt16LE(2);
+		const num2 = data.readUInt16LE(4);
+		const num3 = data.readUInt16LE(6);
+		const num4 = data.readUInt16LE(8);
+		const ptr1 = data.readUInt16LE(10);
+		const ptr2 = data.readUInt16LE(12);
+		if (beforeUpdate) {
+			return `Hook called: ${ptr1}, ${ptr2}, ${num1}, ${num2}, ${num3}, ${num4}`
+		} else {
+			return `Changing args to: ${ptr1}, ${ptr2}, ${num1}, ${num2}, ${num3}, ${num4}`
+		}
+	}
+
+	function formatLogMessage(logId, msg) {
+		try {
+			const { type, data } = msg;
+			if (logId == 'system') {
+				return formatSystemLogMessage(type, data);
+			} else {
+				return formatAppLogMessage(type, data);
+			}
+		} catch (e) {
+			return `Log error: ${e instanceof Error ? e.message : 'Invalid data'}`;
+		}
+	}
+
+	function logForMessage(msg) {
+		const { type, data } = msg;
+		if (type > 0xFF00) {
+			return 'system';
+		}
+		switch (type) {
+			case 1:
+				return 'func1';
+			case 2:
+				return 'func2';
+			case 3:
+				return 'func3';
+		}
+		throw Error(`unsupported message ${type}`);
+	}
+	
+	async function mailboxLoop(mailbox) {
+		while (true) {
+			try {
+				const messages = await mailbox.fetch();
+				if (messages.length > 0) {
+					messages.forEach(msg => {
+						const logId = logForMessage(msg);
+						appendToLog(logId, `${formatLogMessage(logId, msg)}`)
+					});
+				}
+			} catch (error) {
+				console.error("Fetch error:", error);
+			}
+			await new Promise(resolve => setTimeout(resolve, 100));
+		}
+	}
+
+	
+	function parseNumber(str) {
+		return parseInt(str, str.startsWith('0x') ? 16 : 10);
+	}
+
+	async function installHooks() {
+		// FIXME: will force refresh twice on reload if stack is already allocated
+		const injStatus = await injector.Status(true);
+		if (!injStatus.allocated) {
+			appendToLog('system', 'Error: Memory not allocated, try reloading the page.');
+			return;
+		}
+		if (injStatus.process != "HOOK_ME.EXE") {
+			appendToLog('system', `Unexpected process running: ${injStatus.process || 'none'}`);
+			return;
+		}
+		await injector.HookDemoApp(injStatus.baseSegment);
+		updateStatus(injStatus.process, "Hooked");
+	}
+
+	async function init() {
+		updateStatus("", "Loading");
+		createLogViewer('system', 'System Log');
+		try {
+			await injector.Prepare();
+		} catch (e) {
+			appendToLog('system', e.message);
+			return;
+		}
+		const injStatus = await injector.Status();
+		updateStatus(injStatus.process, "Ready");
+		mailboxLoop(injector.mailbox);
+		createLogViewer('func1', 'Function 1');
+		createLogViewer('func2', 'Function 2');
+		createLogViewer('func3', 'Function 3');
+		// FIXME: should support more than 2 byte unsigned ints
+		function makeUpdateCallback(symbol) {
+			return async (rawVal) => {
+				// FIXME: input validation
+				const val = parseNumber(rawVal);
+				const buf = new ArrayBuffer(2);
+				const view = new DataView(buf);
+				view.setUint16(0, val, true);
+				const addr = injector.elf.getFinalSymbolLocation(symbol);
+				await injector.api.writeMem(addr, buf);
+				appendToLog('system', `Setting ${symbol} (0x${addr.toString(16)}) to ${val}`);
+			};
+		}
+		function makePoller(symbol) {
+			// FIXME: these should coalesce reads
+			return async () => {
+				const addr = injector.elf.getFinalSymbolLocation(symbol);
+				const view = new DataView((await injector.api.readMem(addr, 2)).buffer);
+				return view.getUint16(0, true);
+			};
+		}
+		addSetting('Add to num1', 0, makeUpdateCallback("add_to_num1"), makePoller("add_to_num1"));
+		addSetting('Add to num2', 0, makeUpdateCallback("add_to_num2"), makePoller("add_to_num2"));
+		addSetting('Add to num3', 0, makeUpdateCallback("add_to_num3"), makePoller("add_to_num3"));
+		addSetting('Add to num4', 0, makeUpdateCallback("add_to_num4"), makePoller("add_to_num4"));
+		addSetting('Add to ptr1', 0, makeUpdateCallback("add_to_ptr1"), makePoller("add_to_ptr1"));
+		addSetting('Add to ptr2', 0, makeUpdateCallback("add_to_ptr2"), makePoller("add_to_ptr2"));
+		addSetting('Scale func1 return', 0, makeUpdateCallback("func1_ret_multiplier"), makePoller("func1_ret_multiplier"));
+		installHooks();
+	}
+	
+	init();
+</script>
+
+</body>
+</html>
