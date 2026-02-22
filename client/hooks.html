@@ -226,20 +226,10 @@
 		}
 	}
 
-	function formatAppLogMessage(type, data) {
-		// FIXME: port to typescript and use the binary-parser library
-		const beforeUpdate = data.readUInt8(0);
-		const num1 = data.readUInt16LE(2);
-		const num2 = data.readUInt16LE(4);
-		const num3 = data.readUInt16LE(6);
-		const num4 = data.readUInt16LE(8);
-		const ptr1 = data.readUInt16LE(10);
-		const ptr2 = data.readUInt16LE(12);
-		if (beforeUpdate) {
-			return `Hook called: ${ptr1}, ${ptr2}, ${num1}, ${num2}, ${num3}, ${num4}`
-		} else {
-			return `Changing args to: ${ptr1}, ${ptr2}, ${num1}, ${num2}, ${num3}, ${num4}`
-		}
+	function formatRngLogMessage(type, data) {
+		const origArg = data.readInt16LE(0);
+		const result = data.readInt16LE(2);
+		return `schick_random(${origArg}) = ${result}`;
 	}
 
 	function formatLogMessage(logId, msg) {
@@ -247,8 +237,10 @@
 			const { type, data } = msg;
 			if (logId == 'system') {
 				return formatSystemLogMessage(type, data);
+			} else if (logId == 'rng') {
+				return formatRngLogMessage(type, data);
 			} else {
-				return formatAppLogMessage(type, data);
+				throw Error(`Unknown log id ${logId}`)
 			}
 		} catch (e) {
 			return `Log error: ${e instanceof Error ? e.message : 'Invalid data'}`;
@@ -262,11 +254,7 @@
 		}
 		switch (type) {
 			case 1:
-				return 'func1';
-			case 2:
-				return 'func2';
-			case 3:
-				return 'func3';
+				return 'rng';
 		}
 		throw Error(`unsupported message ${type}`);
 	}
@@ -300,11 +288,11 @@
 			appendToLog('system', 'Error: Memory not allocated, try reloading the page.');
 			return;
 		}
-		if (injStatus.process != "HOOK_ME.EXE") {
+		if (injStatus.process != "SCHICKM.EXE" && injStatus.process != "BLADEM.EXE") {
 			appendToLog('system', `Unexpected process running: ${injStatus.process || 'none'}`);
 			return;
 		}
-		await injector.HookDemoApp(injStatus.baseSegment);
+		await injector.HookRoA1(injStatus.baseSegment, injStatus.process);
 		updateStatus(injStatus.process, "Hooked");
 	}
 
@@ -320,17 +308,15 @@
 		const injStatus = await injector.Status();
 		updateStatus(injStatus.process, "Ready");
 		mailboxLoop(injector.mailbox);
-		createLogViewer('func1', 'Function 1');
-		createLogViewer('func2', 'Function 2');
-		createLogViewer('func3', 'Function 3');
-		// FIXME: should support more than 2 byte unsigned ints
+		createLogViewer('rng', 'Random Number Generator');
+		// FIXME: should support more than 2 byte signed ints
 		function makeUpdateCallback(symbol) {
 			return async (rawVal) => {
 				// FIXME: input validation
 				const val = parseNumber(rawVal);
 				const buf = new ArrayBuffer(2);
 				const view = new DataView(buf);
-				view.setUint16(0, val, true);
+				view.setInt16(0, val, true);
 				const addr = injector.elf.getFinalSymbolLocation(symbol);
 				await injector.api.writeMem(addr, buf);
 				appendToLog('system', `Setting ${symbol} (0x${addr.toString(16)}) to ${val}`);
@@ -341,16 +327,12 @@
 			return async () => {
 				const addr = injector.elf.getFinalSymbolLocation(symbol);
 				const view = new DataView((await injector.api.readMem(addr, 2)).buffer);
-				return view.getUint16(0, true);
+				return view.getInt16(0, true);
 			};
 		}
-		addSetting('Add to num1', 0, makeUpdateCallback("add_to_num1"), makePoller("add_to_num1"));
-		addSetting('Add to num2', 0, makeUpdateCallback("add_to_num2"), makePoller("add_to_num2"));
-		addSetting('Add to num3', 0, makeUpdateCallback("add_to_num3"), makePoller("add_to_num3"));
-		addSetting('Add to num4', 0, makeUpdateCallback("add_to_num4"), makePoller("add_to_num4"));
-		addSetting('Add to ptr1', 0, makeUpdateCallback("add_to_ptr1"), makePoller("add_to_ptr1"));
-		addSetting('Add to ptr2', 0, makeUpdateCallback("add_to_ptr2"), makePoller("add_to_ptr2"));
-		addSetting('Scale func1 return', 0, makeUpdateCallback("func1_ret_multiplier"), makePoller("func1_ret_multiplier"));
+		addSetting('Force random(100)', 0, makeUpdateCallback("fake_random_val_100"), makePoller("fake_random_val_100"));
+		addSetting('Force random(20)', 0, makeUpdateCallback("fake_random_val_20"), makePoller("fake_random_val_20"));
+		addSetting('Force random(6)', 0, makeUpdateCallback("fake_random_val_6"), makePoller("fake_random_val_6"));
 		installHooks();
 	}
 	

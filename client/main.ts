@@ -6,7 +6,7 @@ import { parseSDA, parsePSP, parseEnv } from "./util"
 import * as b from '@pretendonetwork/binary-parser';
 import { Mailbox } from "./mailbox";
 
-export * from './hook_demo_app';
+export * from './hook_roa1';
 
 // https://github.com/PretendoNetwork/binary-parser/issues/5 🤦‍♂️
 if (typeof SharedArrayBuffer == "undefined") {

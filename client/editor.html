@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>DSA1 Hero Editor</title>
+    <style>
+        :root {
+            --gold: #d4af37;
+            --bg-dark: #0c0c0c;
+            --panel-bg: #1e1e2e;
+            --hp-color: #e74c3c;
+            --mana-color: #3498db;
+            --good-stat: #2ecc71;
+            --bad-stat: #e67e22;
+            --text-muted: #888;
+        }
+
+        body {
+            background-color: var(--bg-dark);
+            color: #eeeeee;
+            font-family: 'Courier New', Courier, monospace;
+            padding: 30px;
+            display: flex;
+            justify-content: center;
+        }
+
+        .party-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+            max-width: 1100px;
+        }
+
+        .hero-card {
+            background-color: var(--panel-bg);
+            border: 2px solid var(--gold);
+            padding: 12px;
+            width: 330px;
+        }
+
+        /* Portrait & Bars */
+        .hero-header {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        .portrait-placeholder {
+            width: 90px;
+            height: 90px;
+            background: #000;
+            border: 1px inset var(--gold);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            font-size: 0.7rem;
+            color: var(--gold);
+            padding: 4px;
+        }
+
+        .bars-section { flex-grow: 1; }
+        .stat-label { font-size: 0.7rem; margin-bottom: 2px; display: flex; justify-content: space-between; }
+        .bar-outer { width: 100%; height: 14px; background: #000; border: 1px solid #444; margin-bottom: 6px; position: relative; }
+        .bar-fill { height: 100%; transition: width 0.4s; }
+        .hp-fill { background-color: var(--hp-color); }
+        .mana-fill { background-color: var(--mana-color); }
+        .bar-val { position: absolute; width: 100%; text-align: center; font-size: 0.65rem; line-height: 14px; text-shadow: 1px 1px 0px #000; }
+
+        /* Attributes Table Styling */
+        .attr-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            border-top: 1px solid #444;
+            padding-top: 10px;
+        }
+
+        /* This creates the aligned columns inside each side */
+        .attr-table {
+            display: grid;
+            grid-template-columns: auto auto; /* Name col, Val col */
+            column-gap: 8px;
+            row-gap: 2px;
+            font-size: 0.8rem;
+        }
+
+        .attr-name {
+            text-align: right;
+            color: var(--text-muted);
+        }
+
+        .attr-val {
+            text-align: left;
+            font-weight: bold;
+            white-space: nowrap;
+        }
+
+        .good-side .attr-val { color: var(--good-stat); }
+        .bad-side .attr-val { color: var(--bad-stat); }
+
+        .footer-stats {
+            margin-top: 10px;
+            padding-top: 8px;
+            border-top: 1px solid #444;
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.7rem;
+            color: var(--gold);
+        }
+    </style>
+	<script src="./vendor/keystone-x86.min.js"></script>
+	<script src="./vendor/capstone-x86.min.js"></script>
+	<script src="bundle.js"></script>
+</head>
+<body>
+
+<div class="party-grid" id="partyContainer"></div>
+
+<script>
+    const goodAttribs = ["MU", "KL", "CH", "FF", "GE", "IN", "KK"];
+    const badAttribs  = ["AG", "HA", "RA", "GG", "TA", "NG", "JZ"];
+
+    function createHeroCard(h, heroIndex) {
+        const hpPct = (h.hp / h.hp_max) * 100;
+        const manaPct = h.mana_max > 0 ? (h.mana / h.mana_max) * 100 : 0;
+
+        // Helper for Attributes (AttribId 0-6 for good, 7-13 for bad)
+        const buildAttribRows = (labels, offset) => {
+            return labels.map((name, i) => {
+                const globalIdx = offset + i;
+                const data = offset === 0 ? h.good_attribs[i] : h.bad_attribs[i];
+                return `
+                    <div class="attr-name">${name}</div>
+                    <div class="attr-val">
+                        <span contenteditable="true" onblur="setHeroAttribValue(${heroIndex}, ${globalIdx}, this.innerText, ${data.base})">${data.current}</span>/
+                        <span contenteditable="true" onblur="setHeroAttribValue(${heroIndex}, ${globalIdx}, ${data.current}, this.innerText)">${data.base}</span>
+                    </div>
+                `;
+            }).join('');
+        };
+
+        return `
+            <div class="hero-card">
+                <div class="hero-header">
+                    <div class="portrait-placeholder" contenteditable="true" 
+                         onblur="setHeroValue(${heroIndex}, 'name', this.innerText)">${h.name}</div>
+                    <div class="bars-section">
+                        <div class="stat-label">
+                            <span>LVL <span contenteditable="true" onblur="setHeroValue(${heroIndex}, 'level', this.innerText)">${h.level}</span></span>
+                            <span>HP</span>
+                        </div>
+                        <div class="bar-outer">
+                            <div class="bar-fill hp-fill" style="width: ${hpPct}%"></div>
+                            <div class="bar-val">
+                                <span contenteditable="true" onblur="setHeroValue(${heroIndex}, 'hp', this.innerText)">${h.hp}</span>/
+                                <span contenteditable="true" onblur="setHeroValue(${heroIndex}, 'hp_max', this.innerText)">${h.hp_max}</span>
+                            </div>
+                        </div>
+                        <div style="visibility: ${h.mana_max > 0 ? 'visible' : 'hidden'}">
+                            <div class="stat-label"><span></span><span>MANA</span></div>
+                            <div class="bar-outer">
+                                <div class="bar-fill mana-fill" style="width: ${manaPct}%"></div>
+                                <div class="bar-val">
+                                    <span contenteditable="true" onblur="setHeroValue(${heroIndex}, 'mana', this.innerText)">${h.mana}</span>/
+                                    <span contenteditable="true" onblur="setHeroValue(${heroIndex}, 'mana_max', this.innerText)">${h.mana_max}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="attr-container">
+                    <div class="attr-table good-side">${buildAttribRows(goodAttribs, 0)}</div>
+                    <div class="attr-table bad-side">${buildAttribRows(badAttribs, 7)}</div>
+                </div>
+
+                <div class="footer-stats">
+                    <span>EXP <span contenteditable="true" onblur="setHeroValue(${heroIndex}, 'exp', this.innerText)">${h.exp}</span></span>
+                    <span>$ <span contenteditable="true" onblur="setHeroValue(${heroIndex}, 'money', this.innerText)">${h.money}</span></span>
+                    <span>ARM <span contenteditable="true" onblur="setHeroValue(${heroIndex}, 'armor', this.innerText)">${h.armor}</span></span>
+                    <span>MR <span contenteditable="true" onblur="setHeroValue(${heroIndex}, 'mr', this.innerText)">${h.mr}</span></span>
+                </div>
+            </div>
+        `;
+    }
+
+	let heroes;
+
+    function render() {
+        const container = document.getElementById('partyContainer');
+		container.innerHTML = heroes.map(createHeroCard).join('');
+		
+		container.addEventListener('keydown', (e) => {
+			// Check if the user pressed Enter and is currently in an editable span
+			if (e.key === 'Enter' && e.target.hasAttribute('contenteditable')) {
+				e.preventDefault(); // Stop the newline
+				e.target.blur();    // Trigger the onblur save event
+			}
+		});
+    }
+
+    async function setHeroValue(heroId, key, value) {
+		const hero = heroes[heroId];
+		if (key == "name") {
+			hero[key] = value;
+			hero["name_unused"] = value; // can't hurt to keep this in sync
+		} else {
+			hero[key] = parseInt(value);
+		}
+		injector.WriteHero(heroId, hero);
+    }
+
+    async function setHeroAttribValue(heroId, attribId, curValue, baseValue) {
+		curValue = parseInt(curValue);
+		baseValue = parseInt(baseValue);
+		const hero = heroes[heroId];
+		if (attribId < 7) {
+			hero.good_attribs[attribId].current = curValue
+			hero.good_attribs[attribId].base = baseValue
+		} else {
+			hero.bad_attribs[attribId - 7].current = curValue
+			hero.bad_attribs[attribId - 7].base = baseValue
+		}
+		injector.WriteHero(heroId, hero);
+    }
+
+	async function init() {
+		heroes = await injector.GetHeroes();
+		render();
+	}
+
+    init();
+</script>
+</body>
+</html>
